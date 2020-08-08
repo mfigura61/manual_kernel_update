@@ -1,47 +1,105 @@
-# Describe VMs
+# -*- mode: ruby -*-
+# vim: set ft=ruby :
+
 MACHINES = {
-  # VM name "kernel update"
-  :"kernel-update" => {
-              # VM box
-              :box_name => "centos/7",
-              # VM CPU count
-              :cpus => 2,
-              # VM RAM size (Mb)
-              :memory => 1536,
-              # networks
-              :net => [],
-              # forwarded ports
-              :forwarded_port => []
-            }
+  :otuslinux => {
+        :box_name => "centos/7",
+        :ip_addr => '192.168.11.101',
+	:disks => {
+		:sata1 => {
+			:dfile => './sata1.vdi',
+			:size => 250,
+			:port => 1
+		},
+		:sata2 => {
+                        :dfile => './sata2.vdi',
+                        :size => 250, # Megabytes
+			:port => 2
+		},
+                :sata3 => {
+                        :dfile => './sata3.vdi',
+                        :size => 250,
+                        :port => 3
+                },
+                :sata4 => {
+                        :dfile => './sata4.vdi',
+                        :size => 250, # Megabytes
+                        :port => 4
+                },
+                :sata5 => {
+                        :dfile => './sata5.vdi',
+                        :size => 250, # Megabytes
+                        :port => 5
+                },
+                :sata6 => {
+                        :dfile => './sata6.vdi',
+                        :size => 250, # Megabytes
+                        :port => 6
+                }
+
+
+	}
+
+		
+  },
 }
 
 Vagrant.configure("2") do |config|
+
   MACHINES.each do |boxname, boxconfig|
-    # Disable shared folders
-    config.vm.synced_folder ".", "/vagrant", disabled: true
-    # Apply VM config
-    config.vm.define boxname do |box|
-      # Set VM base box and hostname
-      box.vm.box = boxconfig[:box_name]
-      box.vm.host_name = boxname.to_s
-      # Additional network config if present
-      if boxconfig.key?(:net)
-        boxconfig[:net].each do |ipconf|
-          box.vm.network "private_network", ipconf
-        end
+
+      config.vm.define boxname do |box|
+
+          box.vm.box = boxconfig[:box_name]
+          box.vm.host_name = boxname.to_s
+
+          #box.vm.network "forwarded_port", guest: 3260, host: 3260+offset
+
+          box.vm.network "private_network", ip: boxconfig[:ip_addr]
+
+          box.vm.provider :virtualbox do |vb|
+            	  vb.customize ["modifyvm", :id, "--memory", "1024"]
+                  needsController = false
+		  boxconfig[:disks].each do |dname, dconf|
+			  unless File.exist?(dconf[:dfile])
+				vb.customize ['createhd', '--filename', dconf[:dfile], '--variant', 'Fixed', '--size', dconf[:size]]
+                                needsController =  true
+                          end
+
+		  end
+                  if needsController == true
+                     vb.customize ["storagectl", :id, "--name", "SATA", "--add", "sata" ]
+                     boxconfig[:disks].each do |dname, dconf|
+                         vb.customize ['storageattach', :id,  '--storagectl', 'SATA', '--port', dconf[:port], '--device', 0, '--type', 'hdd', '--medium', dconf[:dfile]]
+                     end
+                  end
+          end
+ 	  box.vm.provision "shell", inline: <<-SHELL
+	      mkdir -p ~root/.ssh
+              cp ~vagrant/.ssh/auth* ~root/.ssh
+	      yum install -y mdadm smartmontools hdparm gdisk
+  	    mdadm --zero-superblock --force /dev/sd{b,c,d,e,f,g}
+            mdadm --create --verbose --force /dev/md0 -l 10 -n 6 /dev/sd{b,c,d,e,f,g}
+            cat /proc/mdstat
+            mkdir /etc/mdadm/
+            echo "DEVICE partitions" > /etc/mdadm/mdadm.conf
+            mdadm --detail --scan --verbose | awk '/ARRAY/ {print}' >> /etc/mdadm/mdadm.conf
+            parted -s /dev/md0 mklabel gpt
+            parted /dev/md0 mkpart primary ext4 0% 20%
+            parted /dev/md0 mkpart primary ext4 20% 40%
+            parted /dev/md0 mkpart primary ext4 40% 60%
+            parted /dev/md0 mkpart primary ext4 60% 80%
+            parted /dev/md0 mkpart primary ext4 80% 100%
+            for i in $(seq 1 5); do sudo mkfs.ext4 /dev/md0p$i; done
+            mkdir -p /raid/part{1,2,3,4,5}
+            for i in $(seq 1 5); do mount /dev/md0p$i /raid/part$i; done
+            echo "#NEW DEVICE" >> /etc/fstab
+            for i in $(seq 1 5); do echo `sudo blkid /dev/md0p$i | awk '{print $2}'` /u0$i ext4 defaults 0 0 >> /etc/fstab; done
+            sed -i '65s/PasswordAuthentication no/PasswordAuthentication yes/g' /etc/ssh/sshd_config
+            systemctl restart sshd 
+         SHELL
+
       end
-      # Port-forward config if present
-      if boxconfig.key?(:forwarded_port)
-        boxconfig[:forwarded_port].each do |port|
-          box.vm.network "forwarded_port", port
-        end
-      end
-      # VM resources config
-      box.vm.provider "virtualbox" do |v|
-        # Set VM RAM size and CPU count
-        v.memory = boxconfig[:memory]
-        v.cpus = boxconfig[:cpus]
-      end
-    end
   end
 end
+
